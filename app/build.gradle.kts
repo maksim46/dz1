@@ -120,4 +120,15 @@ afterEvaluate {
             args((project.property("consoleArgs") as String).split(" "))
         }
     }
+    tasks.register<JavaExec>("runCompareFormats") {
+        group = "application"
+        description = "Сравнение форматов ответов DeepSeek: без ограничений, JSON, max_tokens, stop"
+        mainClass.set("com.example.deepseek.console.CompareFormatsMainKt")
+        jvmArgs("-Dfile.encoding=UTF-8")
+        val compileKotlin = tasks.named("compileDebugKotlin").get()
+        dependsOn(compileKotlin)
+        val kotlinClasses = compileKotlin.outputs.files
+        val runtimeCp = configurations.getByName("debugRuntimeClasspath")
+        classpath(kotlinClasses + runtimeCp)
+    }
 }

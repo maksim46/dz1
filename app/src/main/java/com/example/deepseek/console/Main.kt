@@ -13,6 +13,8 @@ import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.io.PrintStream
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 fun main(args: Array<String>) {
@@ -29,7 +31,7 @@ fun main(args: Array<String>) {
 
     if (args.isNotEmpty()) {
         // Режим одного запроса из аргументов (gradlew, скрипты)
-        sendRequest(apiKey, args.joinToString(" "))
+        sendRequest(apiKey, args.joinToString(" "), null)
         return
     }
 
@@ -40,13 +42,15 @@ fun main(args: Array<String>) {
         print("> ")
         val line = input.readLine()?.trim() ?: break
         if (line.isEmpty() || line.equals("exit", ignoreCase = true)) break
-        sendRequest(apiKey, line)
+        sendRequest(apiKey, line, input)
         println("---")
     }
 }
 
-private fun sendRequest(apiKey: String, prompt: String) {
+private fun sendRequest(apiKey: String, prompt: String, input: BufferedReader?) {
     println("Запрос: $prompt")
+    if (input != null) println("Ответ (Enter — остановить вывод):")
+    println()
 
     val url = "https://api.deepseek.com/chat/completions"
     val body = """
@@ -55,11 +59,15 @@ private fun sendRequest(apiKey: String, prompt: String) {
             "messages": [
                 {"role": "user", "content": ${escapeJson(prompt)}}
             ],
-            "stream": false
+            "stream": true
         }
     """.trimIndent()
 
-    val client = OkHttpClient()
+    val client = OkHttpClient.Builder()
+        .connectTimeout(60, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(60, TimeUnit.SECONDS)
+        .build()
     val request = Request.Builder()
         .url(url)
         .addHeader("Content-Type", "application/json")
@@ -67,26 +75,94 @@ private fun sendRequest(apiKey: String, prompt: String) {
         .post(body.toRequestBody("application/json".toMediaType()))
         .build()
 
-    try {
-     //   println("Запрос к API: $request")
-        client.newCall(request).execute().use { response ->
-            val json = response.body?.string() ?: ""
-        //    println("Ответ API: $json")
-            if (!response.isSuccessful) {
-                System.err.println("HTTP ${response.code}: $json")
-                return
-            }
-            val content = extractContent(json)
-            if (content != null) {
-                println(content)
-            } else {
-                System.err.println("Не удалось извлечь ответ. Ответ API: $json")
+    val call = client.newCall(request)
+    if (input != null) {
+        // Интерактивный режим: поток выводит ответ, по Enter отменяем запрос
+        val streamThread = thread(name = "stream") {
+            try {
+                call.execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val errBody = response.body?.string() ?: ""
+                        System.err.println("HTTP ${response.code}: $errBody")
+                        return@thread
+                    }
+                    val stream = response.body?.byteStream() ?: return@thread
+                    BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8)).use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            val s = line!!
+                            if (!s.startsWith("data: ")) continue
+                            val data = s.removePrefix("data: ").trim()
+                            if (data == "[DONE]") break
+                            val chunk = extractDeltaContent(data)
+                            if (chunk.isNotEmpty()) {
+                                print(chunk)
+                                System.out.flush()
+                            }
+                        }
+                        println()
+                    }
+                }
+            } catch (e: Exception) {
+                if (!call.isCanceled()) {
+                    System.err.println("Ошибка: ${e.message}")
+                }
             }
         }
-    } catch (e: Exception) {
-        System.err.println("Ошибка: ${e.message}")
-        e.printStackTrace()
+        input.readLine()
+        call.cancel()
+        streamThread.join(3000)
+    } else {
+        // Режим без консоли (аргументы): просто стриминг без остановки по Enter
+        try {
+            call.execute().use { response ->
+                if (!response.isSuccessful) {
+                    val errBody = response.body?.string() ?: ""
+                    System.err.println("HTTP ${response.code}: $errBody")
+                    return
+                }
+                val stream = response.body?.byteStream() ?: return
+                BufferedReader(InputStreamReader(stream, StandardCharsets.UTF_8)).use { reader ->
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        val s = line!!
+                        if (!s.startsWith("data: ")) continue
+                        val data = s.removePrefix("data: ").trim()
+                        if (data == "[DONE]") break
+                        val chunk = extractDeltaContent(data)
+                        if (chunk.isNotEmpty()) {
+                            print(chunk)
+                            System.out.flush()
+                        }
+                    }
+                    println()
+                }
+            }
+        } catch (e: Exception) {
+            System.err.println("Ошибка: ${e.message}")
+            e.printStackTrace()
+        }
     }
+}
+
+/** Извлекает content из delta в SSE-чанке: {"choices":[{"delta":{"content":"..."}}]} */
+private fun extractDeltaContent(json: String): String {
+    val contentKey = "\"content\":\""
+    val start = json.indexOf(contentKey)
+    if (start == -1) return ""
+    val contentStart = start + contentKey.length
+    var end = contentStart
+    while (end < json.length) {
+        when (json[end]) {
+            '\\' -> end += 2
+            '"' -> break
+            else -> end++
+        }
+    }
+    return json.substring(contentStart, end)
+        .replace("\\n", "\n")
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\")
 }
 
 private fun escapeJson(s: String): String {
