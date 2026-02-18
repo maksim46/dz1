@@ -131,4 +131,15 @@ afterEvaluate {
         val runtimeCp = configurations.getByName("debugRuntimeClasspath")
         classpath(kotlinClasses + runtimeCp)
     }
+    tasks.register<JavaExec>("runLogicTaskCompare") {
+        group = "application"
+        description = "Логическая задача: 4 способа решения через API (прямой, пошагово, промпт, эксперты)"
+        mainClass.set("com.example.deepseek.console.LogicTaskCompareMainKt")
+        jvmArgs("-Dfile.encoding=UTF-8")
+        val compileKotlin = tasks.named("compileDebugKotlin").get()
+        dependsOn(compileKotlin)
+        val kotlinClasses = compileKotlin.outputs.files
+        val runtimeCp = configurations.getByName("debugRuntimeClasspath")
+        classpath(kotlinClasses + runtimeCp)
+    }
 }
