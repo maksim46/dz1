@@ -142,4 +142,15 @@ afterEvaluate {
         val runtimeCp = configurations.getByName("debugRuntimeClasspath")
         classpath(kotlinClasses + runtimeCp)
     }
+    tasks.register<JavaExec>("runTemperatureCompare") {
+        group = "application"
+        description = "Сравнение ответов при temperature 0, 0.7, 1.2 — точность, креативность, рекомендации"
+        mainClass.set("com.example.deepseek.console.TemperatureCompareMainKt")
+        jvmArgs("-Dfile.encoding=UTF-8")
+        val compileKotlin = tasks.named("compileDebugKotlin").get()
+        dependsOn(compileKotlin)
+        val kotlinClasses = compileKotlin.outputs.files
+        val runtimeCp = configurations.getByName("debugRuntimeClasspath")
+        classpath(kotlinClasses + runtimeCp)
+    }
 }
